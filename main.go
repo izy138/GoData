@@ -378,7 +378,9 @@ func (s *Storage) loadPage(pageID uint32) (*Page,error) {
 	// ReadAt lets you read from any position in the file
 	// example: we want Page 1 which starts from 4160-8255.
 	// so it will be: s.file.ReadAt(pageData, 4160)
-
+	if err != nil {
+        return nil, fmt.Errorf("failed to read page %d: %w", pageID, err)
+    }
 
 	// creates a page object
 	page := &Page{
@@ -410,5 +412,30 @@ func (s *Storage) loadPage(pageID uint32) (*Page,error) {
 
 	return page, nil
 }
-//the first access in Disk would be ~5ms, the second acces in memeory would be ~0.0005ms (1000x faster)
+// the first access in Disk would be ~5ms, the second acces in memeory would be ~0.0005ms (1000x faster)
 
+// Makes changes permanent (crucial)
+func (s *Storage) writePage(page *Page) error {
+	// when you modify a page by adding or deleting a record, we need to update the page.RecordCount
+	// this method ensures the first 2 bytes of the page always reflect the current record count
+	
+	// update the record count number in page data
+	// example: have it update to 3 pages: sets the slice[0] = byte(value) to the low priority bit 0x03 , and slice[1]= byte(value >> 8) to high prio 0x00
+	binary.LittleEndian.PutUint16(page.Data[0:2], page.RecordCount)
+
+	// gets the exact byte position when the page would be found in the file
+	offset := s.pageOffset(page.ID)
+
+	// writes the new pages 4096 bytes to disk
+	_, err := s.file.WriteAt(page.Data{:}, offset)
+	if err != nil {
+    return fmt.Errorf("failed to write page %d: %w", page.ID, err)
+	}
+
+	page.IsDirty = false
+	// the page in disk now match what is in memory
+	// we dont have to waste time to write it in disk until it changes again.
+	
+	return s.file.Sync()
+	//force disk write, forces the os to write to disk, without it, the data could sit in os buffers and lost when power is off
+}

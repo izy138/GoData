@@ -439,3 +439,51 @@ func (s *Storage) writePage(page *Page) error {
 	return s.file.Sync()
 	//force disk write, forces the os to write to disk, without it, the data could sit in os buffers and lost when power is off
 }
+// Start:
+// page := &Page{
+//     ID: 1,
+//     RecordCount: 3,  // We added a record
+//     IsDirty: true,   // Needs to be written
+//     Data: [0x02,0x00,...] // Still shows old count!
+// }
+// Step-by-step execution:
+
+// Fix header: page.Data[0:2] becomes [0x03,0x00]
+// Calculate position: offset = 4160 for page 1
+// Write 4096 bytes: All of page.Data gets written to disk at position 4160
+// Mark clean: page.IsDirty = false
+// Force sync: OS writes from buffer to actual disk
+
+// Final state:
+// gopage := &Page{
+//     ID: 1,
+//     RecordCount: 3,
+//     IsDirty: false,  // Clean! Matches disk
+//     Data: [0x03,0x00,...] // Header fixed
+// }
+
+func (s *Storage) allocateNewPage() *Page {
+	// Creates a new page object using the next availble page id,
+	// the page only exists in memory and needs to be written to the disk, so isDirty is true
+	// and the RecordCount is 0 beccause the new page starts as empty.
+	page := &Page {
+		ID:			 s.nextPageID,
+		isDirty: 	 true,
+		RecordCount: 0,
+	}
+
+	//initialize the pages header record count as 0
+	binary.LittleEndian.PutUint16(page.Data[0:2], 0)
+	//Byte 0: 0x00  ← Low byte of record count (0 records)
+	// Byte 1: 0x00  ← High byte of record count  
+	// Byte 2: 0x00  ← Uninitialized data
+
+	//adds to cache
+	//stores the new page in the in-memory cache
+	s.pages[page.ID] = page
+	//update the metadata: nextPageID and totalPages is incremented to keep track of correct page number
+	s.nextPageID++
+	s.totalPages++
+
+	return page
+}

@@ -487,3 +487,51 @@ func (s *Storage) allocateNewPage() *Page {
 
 	return page
 }
+// allocateNewPage() is called when:
+
+// Database is empty: First page creation
+// All existing pages are full: Need more space for new records
+// Optimal performance: Sometimes we pre-allocate pages
+
+func (s *Storage) updateHeader() error {
+    header := Header{
+        Magic:      MagicNumber,
+        Version:    Version,
+        PageSize:   uint32(s.pageSize),
+        TotalPages: s.totalPages,
+        NextPageID: s.nextPageID,
+		//The first three fields never change, but the last two are dynamic and reflect our current database state.
+    }
+	//writeHeader() function to actually save these values to the file.
+    return s.writeHeader(&header)
+// In Memory (what we're working with):
+// s.totalPages = 3    // We have 3 pages
+// s.nextPageID = 3    // Next new page will be #3
+// On Disk (what the file header says):
+// TotalPages: 2       // File still thinks we have 2 pages!
+// NextPageID: 2       // File thinks next page should be #2!
+// Without updateHeader(): If our program crashes, when we restart:
+
+// We read the old header from disk
+// We think we only have 2 pages
+// We think nextPageID = 2
+// Data loss! Page 2 exists but we don't know about it
+}
+
+func (s *Storage) Close() error {
+	// Like Save all and exit it makes sure everything in memory gets written to disk before shutting down.
+	// goes through each page in the database to check if dirty (new changes)
+	for _, page := range s.pages{
+		if page.IsDirty {
+			if err := s.writePage(page); err != nil {
+				return err // Stop immediately if page write fails
+			}
+		}
+	}
+
+	//update header metadata
+	if err := s.updateHeader(); err != nil {
+		return err // Stop if header update fails
+	}
+	return s.file.Close()
+}

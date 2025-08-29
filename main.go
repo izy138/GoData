@@ -535,3 +535,25 @@ func (s *Storage) Close() error {
 	}
 	return s.file.Close()
 }
+
+func serializeRecord(key, value string) []byte {
+	//converts the string to bytes
+    keyBytes := []byte(key) //key = [user1] length:5
+    valueBytes := []byte(value) //value = [isa] length:3
+
+    //calculates the total size needed 
+    recordSize := 4 + len(keyBytes) + len(valueBytes) // 4 + 5 + 3 = 12 bytes
+    record := make([]byte, recordSize) //creates the byte array 12 byte array filled with 0
+    
+	//takes the length (5) of the key= [user1] and converts it to bytes at index 0-1 [0x05, 0x00, 0,0,0,0,0,0,0,0,0,0]
+    binary.LittleEndian.PutUint16(record[0:2], uint16(len(keyBytes)))
+	//writes the length (3) of the value = [isa]  at index 2-3 [0x05, 0x00, 0x03, 0x00, 0,0,0,0,0,0,0]
+    binary.LittleEndian.PutUint16(record[2:4], uint16(len(valueBytes)))
+
+	//copies 'user1' to positions 4-8 [0x05, 0x00, 0x03, 0x00, 'u, 's', 'e', 'r', '1',0,0,0]
+    copy(record[4:4+len(keyBytes)], keyBytes)
+	// positions 10-11 [0x05, 0x00, 0x03, 0x00, 'u, 's', 'e', 'r', '1', 'i', 's', 'a']
+    copy(record[4+len(keyBytes):], valueBytes)
+    
+    return record
+}

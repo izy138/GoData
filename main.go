@@ -557,3 +557,98 @@ func serializeRecord(key, value string) []byte {
     
     return record
 }
+
+// reverse of serializeRecord() - it takes bytes and extracts the original key-value pair.
+
+func deserializeRecord(data []byte, offset int) (key, value string, bytesRead int, err error) {
+    //need at least 4 bytes to read the header (2 for keyLen + 2 for valueLen)
+	if offset+4 > len(data) {
+        return "", "", 0, errors.New("insufficient data for record header")
+    }
+    
+    keyLen := binary.LittleEndian.Uint16(data[offset:offset+2])
+    valueLen := binary.LittleEndian.Uint16(data[offset+2:offset+4])
+    totalLen := 4 + int(keyLen) + int(valueLen)
+    
+	//make sure i actually have 9 bytes of data available
+	// prevents reading beyond the end of the data array
+    if offset+totalLen > len(data) {
+        return "", "", 0, errors.New("insufficient data for complete record")
+    }
+    
+    key = string(data[offset+4:offset+4+int(keyLen)])
+	// data = [0x02,0x00,0x03,0x00,'h','i','b','y','e']
+	//          0    1    2    3    4   5   6   7   8
+	// offset+4 = 0+4 = 4
+	// offset+4+keyLen = 4+2 = 6
+	// key = string(data[4:6]) = string(['h','i']) = "hi"
+    value = string(data[offset+4+int(keyLen):offset+totalLen])
+	// offset+4+keyLen = 4+2 = 6
+	// offset+totalLen = 0+9 = 9
+	// value = string(data[6:9]) = string(['b','y','e']) = "bye"
+    
+    return key, value, totalLen, nil
+}
+
+//Page level record functions (add, find, delete records)
+
+// finds the end of existing records in a page and appends the new record there.
+func (p *Page) addRecord(key, value string) error{ 
+	// Serioalize the key and value into record = [0x05, 0x00, 0x03, 0x00, 'u, 's', 'e', 'r', '2', 'c', 'a', 'm']
+    record := serializeRecord(key, value)
+    
+    // Find where records end in the page, goes through all records on the page using the recordcount
+    offset := 2 // Skip record count
+    for i := uint16(0); i < p.RecordCount; i++ {
+        if offset+4 > len(p.Data) {
+            return errors.New("corrupted page: invalid record offset")
+        }
+        
+        keyLen := binary.LittleEndian.Uint16(p.Data[offset:offset+2])
+        valueLen := binary.LittleEndian.Uint16(p.Data[offset+2:offset+4])
+        offset += 4 + int(keyLen) + int(valueLen)
+    }
+	// Page Layout:
+	// [0-1]:   0x01, 0x00           		// RecordCount = 1
+	// [2-5]:   0x05, 0x00, 0x03, 0x00  	// Record 1 header: key=5, value=2  
+	// [6-11]:  'u','s','e','r',':','1' 	// Record 1 key: "user:1"
+	// [12-19]: 'i','s','a'					// Record 1 value: "isa"
+    
+    // Check if there's enough space
+    if offset+len(record) > len(p.Data) {
+        return errors.New("page full: not enough space for record")
+    }
+	// offset = 20           				// Used space
+	// len(record) = 12         			// New record size  
+	// total_needed = 20 + 12 = 32 bytes
+	// len(p.Data) = 4096       			// Page size
+	// 32 < 4096 ✓              // Fits!
+    
+    // Add the record
+    copy(p.Data[offset:offset+len(record)], record)
+	//p.Data[20:32] = [0x05, 0x00, 0x03, 0x00, 'u, 's', 'e', 'r', '2', 'c', 'a', 'm']
+    p.RecordCount++
+    p.IsDirty = true
+    
+    return nil
+}
+
+//scnas through all record in the page for a matching key
+func (p *Page) findRecord(key string) (value string, found bool) {
+	//skips the record count
+	offset := 2
+
+	for i := uint16(0); i< p.RecordCount; i++ {
+		recordKey, recordValue, bytesRead, err := deserializeRecord(p.Data[:] offset)
+		if err != nil {
+            return "", false // Corrupted page
+        }
+        
+        if recordKey == key {
+            return recordValue, true
+        }
+        offset += bytesRead
+    }
+    
+    return "", false
+}

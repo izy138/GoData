@@ -649,6 +649,132 @@ func (p *Page) findRecord(key string) (value string, found bool) {
         }
         offset += bytesRead
     }
+    	return "", false
+}
+
+func (p *Page) deleteRecord(key string) bool {
+    offset := 2 // Skip record count
     
-    return "", false
+    for i := uint16(0); i < p.RecordCount; i++ {
+        recordKey, _, bytesRead, err := deserializeRecord(p.Data[:], offset)
+        if err != nil {
+            return false // Corrupted page
+        }
+        
+        if recordKey == key {
+            // Found the record to delete - shift remaining records left
+            nextOffset := offset + bytesRead
+            remainingBytes := len(p.Data) - nextOffset
+            copy(p.Data[offset:], p.Data[nextOffset:nextOffset+remainingBytes])
+            
+            p.RecordCount--
+            p.IsDirty = true
+            return true
+        }
+        
+        offset += bytesRead
+    }
+    
+    return false
+}
+
+func (s *Storage) Put(key, value string) error {
+    // Check if key already exists
+    if pageID, exists := s.pageIndex[key]; exists {
+        page, err := s.loadPage(pageID)
+        if err != nil {
+            return err
+        }
+        
+        // Delete old record and add new one
+        page.deleteRecord(key)
+        if err := page.addRecord(key, value); err != nil {
+            return err
+        }
+        
+        return nil
+    }
+    
+    // Key doesn't exist - find a page with space or create new page
+    var targetPage *Page
+    
+    // Try to find a page with space (simple linear search for now)
+    for pageID := uint32(0); pageID < s.totalPages; pageID++ {
+        page, err := s.loadPage(pageID)
+        if err != nil {
+            continue
+        }
+        
+        // Estimate if record will fit
+        recordSize := 4 + len(key) + len(value)
+        usedSpace := 2 // Record count header
+        for i := uint16(0); i < page.RecordCount; i++ {
+            if usedSpace+4 > len(page.Data) {
+                break
+            }
+            keyLen := binary.LittleEndian.Uint16(page.Data[usedSpace:usedSpace+2])
+            valueLen := binary.LittleEndian.Uint16(page.Data[usedSpace+2:usedSpace+4])
+            usedSpace += 4 + int(keyLen) + int(valueLen)
+        }
+        
+        if usedSpace+recordSize <= len(page.Data) {
+            targetPage = page
+            break
+        }
+    }
+    
+    // If no page has space, allocate a new one
+    if targetPage == nil {
+        targetPage = s.allocateNewPage()
+    }
+    
+    // Add the record
+    if err := targetPage.addRecord(key, value); err != nil {
+        return err
+    }
+    
+    // Update index
+    s.pageIndex[key] = targetPage.ID
+    
+    return nil
+}
+
+func (s *Storage) Get(key string) (string, error) {
+    pageID, exists := s.pageIndex[key]
+    if !exists {
+        return "", errors.New("key not found")
+    }
+    
+    page, err := s.loadPage(pageID)
+    if err != nil {
+        return "", err
+    }
+    
+    value, found := page.findRecord(key)
+    if !found {
+        return "", errors.New("key not found in expected page")
+    }
+    
+    return value, nil
+}
+
+func (s *Storage) Delete(key string) error {
+    pageID, exists := s.pageIndex[key]
+    if !exists {
+        return errors.New("key not found")
+    }
+    
+    page, err := s.loadPage(pageID)
+    if err != nil {
+        return err
+    }
+    
+    if !page.deleteRecord(key) {
+        return errors.New("key not found in expected page")
+    }
+    
+    // Remove from index
+    delete(s.pageIndex, key)
+    
+    return nil
 }

@@ -542,55 +542,64 @@ func (s *Storage) Close() error {
 
 func serializeRecord(key, value string) []byte {
 	//converts the string to bytes
-	keyBytes := []byte(key)     //key = [user1] length:5
+	keyBytes := []byte(key)     //key = [user:1] length:5
 	valueBytes := []byte(value) //value = [isa] length:3
 
 	//calculates the total size needed
-	recordSize := 4 + len(keyBytes) + len(valueBytes) // 4 + 5 + 3 = 12 bytes
-	record := make([]byte, recordSize)                //creates the byte array 12 byte array filled with 0
+	recordSize := 4 + len(keyBytes) + len(valueBytes) // 4 + 6 + 3 = 13 bytes
+	record := make([]byte, recordSize)                //creates the byte array 13 byte array filled with 0
 
-	//takes the length (5) of the key= [user1] and converts it to bytes at index 0-1 [0x05, 0x00, 0,0,0,0,0,0,0,0,0,0]
+	//takes the length (6) of the key= [user:1] and converts it to bytes at index 0-1 [0x06, 0x00, 0,0,0,0,0,0,0,0,0,0,0]
 	binary.LittleEndian.PutUint16(record[0:2], uint16(len(keyBytes)))
-	//writes the length (3) of the value = [isa]  at index 2-3 [0x05, 0x00, 0x03, 0x00, 0,0,0,0,0,0,0]
+	//writes the length (3) of the value = [isa]  at index 2-3 [0x06, 0x00, 0x03, 0x00, 0,0,0,0,0,0,0,0]
 	binary.LittleEndian.PutUint16(record[2:4], uint16(len(valueBytes)))
 
-	//copies 'user1' to positions 4-8 [0x05, 0x00, 0x03, 0x00, 'u, 's', 'e', 'r', '1',0,0,0]
+	//copies 'user:1' to positions 4-8 [0x06, 0x00, 0x03, 0x00, 'u, 's', 'e', 'r', ':', '1',0,0,0,0]
 	copy(record[4:4+len(keyBytes)], keyBytes)
-	// positions 10-11 [0x05, 0x00, 0x03, 0x00, 'u, 's', 'e', 'r', '1', 'i', 's', 'a']
+	// copies 'isa' to positions 10-12 [0x05, 0x00, 0x03, 0x00, 'u', 's', 'e', 'r', ':','1', 'i', 's', 'a']
 	copy(record[4+len(keyBytes):], valueBytes)
 
 	return record
 }
 
 // reverse of serializeRecord() - it takes bytes and extracts the original key-value pair.
-
 func deserializeRecord(data []byte, offset int) (key, value string, bytesRead int, err error) {
-	//need at least 4 bytes to read the header (2 for keyLen + 2 for valueLen)
+	// data = [0x01,0x00,0x06,0x00,0x03,0x00,'u','s','e','r',':','1','i','s','a']
+	//          0    1     2    3    4    5   6   7   8   9   10  11  12  13  14
+	// offset is still 2
+	// need at least 4 bytes to read the header (2 for keyLen + 2 for valueLen)
 	if offset+4 > len(data) {
 		return "", "", 0, errors.New("insufficient data for record header")
 	}
 
+	// Example: data[2:4] = [0x06, 0x00] → keyLen = 6
 	keyLen := binary.LittleEndian.Uint16(data[offset : offset+2])
+	// Example: data[4:6] = [0x03, 0x00] → valueLen = 3
 	valueLen := binary.LittleEndian.Uint16(data[offset+2 : offset+4])
+	// Example: totalLen = 4 (header) + 6 (key) + 3 (value) = 13 bytes
 	totalLen := 4 + int(keyLen) + int(valueLen)
 
-	//make sure i actually have 9 bytes of data available
+	//make sure I actually have 9 bytes of data available
 	// prevents reading beyond the end of the data array
 	if offset+totalLen > len(data) {
 		return "", "", 0, errors.New("insufficient data for complete record")
 	}
-
+	// Extract key string from data
+	// Example: offset=2, keyLen=6
+	//   Start: offset+4 = 2+4 = 6
+	//   End:   offset+4+ keyLen = 2+4+6 = 12
+	//   key = string(data[6:12]) = string(['u','s','e','r',':','1']) = "user:1"
 	key = string(data[offset+4 : offset+4+int(keyLen)])
-	// data = [0x02,0x00,0x03,0x00,'h','i','b','y','e']
-	//          0    1    2    3    4   5   6   7   8
-	// offset+4 = 0+4 = 4
-	// offset+4+keyLen = 4+2 = 6
-	// key = string(data[4:6]) = string(['h','i']) = "hi"
-	value = string(data[offset+4+int(keyLen) : offset+totalLen])
-	// offset+4+keyLen = 4+2 = 6
-	// offset+totalLen = 0+9 = 9
-	// value = string(data[6:9]) = string(['b','y','e']) = "bye"
 
+	// Extract value string from data
+	// Example: offset=2, keyLen=6, totalLen=13
+	//   Start: offset+4+keyLen = 2+4+6 = 12
+	//   End:   offset+totalLen = 2+13 = 15
+	//   value = string(data[12:15]) = string(['i','s','a']) = "isa"
+	value = string(data[offset+4+int(keyLen) : offset+totalLen])
+
+	// Return extracted key-value pair and total bytes consumed
+	// bytesRead tells caller where next record starts (current offset + 13) = 15
 	return key, value, totalLen, nil
 }
 
@@ -612,12 +621,14 @@ func (p *Page) addRecord(key, value string) error {
 		valueLen := binary.LittleEndian.Uint16(p.Data[offset+2 : offset+4])
 		offset += 4 + int(keyLen) + int(valueLen)
 	}
-	// Page Layout:
+	// Current Page Layout:
 	// [0-1]:   0x01, 0x00           		// RecordCount = 1
-	// [2-5]:   0x05, 0x00, 0x03, 0x00  	// Record 1 header: key=5, value=2
-	// [6-11]:  'u','s','e','r',':','1' 	// Record 1 key: "user:1"
-	// [12-14]: 'i','s','a'					// Record 1 value: "isa"
-	// len(record) = 13
+	// [2-5]:   0x06, 0x00, 0x03, 0x00  	// Record 1 header: key length= 6, value length= 3
+	// [6-11]:  'u','s','e','r',':','1' 	// Record 1 key: "user:1" (6 bytes)
+	// [12-14]: 'i','s','a'					// Record 1 value: "isa" (3 bytes)
+	// len(record) = 13 (header(4 bytes) + key(6 bytes) + value(3 bytes) = 13)
+	// [15+] is empty space
+	//
 	// Check if there's enough space
 	if offset+len(record) > len(p.Data) {
 		return errors.New("page full: not enough space for record")
@@ -629,8 +640,10 @@ func (p *Page) addRecord(key, value string) error {
 	// 28 < 4096 ✓              			// Fits!
 
 	// Add the record
+	//p.Data[15:28] = [0x05, 0x00, 0x03, 0x00, 'u', 's', 'e', 'r', ':', '2', 'c', 'a', 'm']
+	//					15	  16 	17    18	19	 20   21   22	23	 24	  25   26	27
 	copy(p.Data[offset:offset+len(record)], record)
-	//p.Data[15:27] = [0x05, 0x00, 0x03, 0x00, 'u, 's', 'e', 'r', '2', 'c', 'a', 'm']
+
 	p.RecordCount++
 	p.IsDirty = true
 
@@ -664,50 +677,103 @@ func (p *Page) findRecord(key string) (value string, found bool) {
 // finds a removes a specific key-value pair from the page, and then shifts
 // all the remaining data left to fill the gap.
 func (p *Page) deleteRecord(key string) bool {
+	// method is called to delete the 2nd record: deleteRecord("user:1")
+
 	offset := 2 // skip record count - the first 2 bytes
 
-	//loop through all the records in the page.
+	//loop through all the records in the page
 	for i := uint16(0); i < p.RecordCount; i++ {
 		recordKey, _, bytesRead, err := deserializeRecord(p.Data[:], offset)
+		// ^ first pass returns return "user:1", "isa", 13, nil
 		if err != nil {
 			return false // Corrupted page
 		}
 
+		//recordKey = "user:1"
+		//bytesRead = 13
+		//offset = 2
+		//Check: "user:1" == "user:1" - its a match!
 		if recordKey == key {
 			// Found the record to delete - shift remaining records left
-			nextOffset := offset + bytesRead
-			remainingBytes := len(p.Data) - nextOffset
-			copy(p.Data[offset:], p.Data[nextOffset:nextOffset+remainingBytes])
+			nextOffset := offset + bytesRead           // 2 + 13 = 15 is the next offset - where record 2 starts
+			remainingBytes := len(p.Data) - nextOffset // 4096 - 15 = 4081 bytes remaining
 
-			p.RecordCount--
-			p.IsDirty = true
+			// THE SHIFT OPERATION:
+			// the Destination (What byte we are copying to) = p.Data[2:] <- we are copying starting at byte 2
+			// the Source (What we are copying) = p.Data[15:15+4081] <- we are copy everything in the record between byte 15 and 4096
+			copy(p.Data[offset:], p.Data[nextOffset:nextOffset+remainingBytes])
+			// we are OVERWRITING record 1, so everything after the record is shifted left.
+			//  [2]:     0x05  ← copied from [15]
+			//	[3]:     0x00  ← copied from [16]
+			//	[4]:     0x03  ← copied from [17]
+			//	[5]:     0x00  ← copied from [18]
+			//	[6]:     'u'   ← copied from [19]
+			//	[7]:     's'   ← copied from [20]
+			//	[8]:     'e'   ← copied from [21]
+			//	[9]:     'r'   ← copied from [22]
+			//	[10]:    ':'   ← copied from [23]
+			//	[11]:    '2'   ← copied from [24]
+			//	[12]:    'c'   ← copied from [25]
+			//	[13]:    'a'   ← copied from [26]
+			//	[14]:    'm'   ← copied from [27]
+			//	[15+]:   empty ← the rest shifts but stays empty
+			p.RecordCount--  // update the record count
+			p.IsDirty = true // we changed the data so it is dirty
 			return true
 		}
-
+		// we update this offset to keep track of the offset
+		// for example if we had to delete record 2 instead, and we had a 3rd record after it,
+		// the offset would start at byte 15 for shifting operation.
+		// nextOffset = 15 + 12 = 27
+		// remainingBytes = 4096 - 27 = 4069
+		// copy(p.Data[15:], p.Data[27:27+4069])
 		offset += bytesRead
 	}
 
 	return false
 }
 
+// Storage.Put() - used for Inserting or Updating Data
+// method called to update user:1 = db.Put("user:1", "leonor")
 func (s *Storage) Put(key, value string) error {
+	// Case 1: Key exists already
 	// Check if key already exists
+	// looks in the in-memory index - the fast lookup map
+	// we check the page index first because its in RAM (fast lookup)
+	// we avoid scanning through all the pages on the disk (very slow)
+	//
+	// s.pageIndex["user:1"] → returns pageID = 0, exists = true
 	if pageID, exists := s.pageIndex[key]; exists {
+		// loads page 0 from disk (or cache is already loaded)
 		page, err := s.loadPage(pageID)
 		if err != nil {
 			return err
 		}
 
-		// Delete old record and add new one
+		// delete old record and add new one
+		//BEFORE deleteRecord:
+		//[0-1]:   RecordCount = 2
+		//[2-14]:  "user:1" = "isa"      ← DELETE THIS
+		//[15-27]: "user:2" = "cam"
+		//
+		//AFTER deleteRecord:
+		//[0-1]:   RecordCount = 1
+		//[2-14]:  "user:2" = "cam"          ← Shifted left!
+		//[15+]:   empty space
 		page.deleteRecord(key)
 		if err := page.addRecord(key, value); err != nil {
 			return err
 		}
-
+		//AFTER addRecord:
+		//[0-1]:   RecordCount = 2
+		//[2-14]:  "user:2" = "cam"
+		//[15-30]: "user:1" = "leonor"  ← NEW! (might be different size)
+		//[31+]:   empty space
 		return nil
 	}
 
-	// Key doesn't exist - find a page with space or create new page
+	// Case 2: Key doesn't exist - find a page with space or create new page
+	// method called: db.Put("user:3", "alice")  exists = false
 	var targetPage *Page
 
 	// Try to find a page with space (simple linear search for now)

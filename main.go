@@ -173,7 +173,7 @@ func (s *Storage) writeHeader(header *Header) error {
 	// will write all 64 bytes to the start of the file.
 	_, err := s.file.WriteAt(headerBytes, 0)
 	if err != nil {
-		return fmt.Errorf("failed to read header: %w", err)
+		return fmt.Errorf("failed to write header: %w", err)
 	}
 	// forces the OS to wrtie the data to the disk
 	// without doing this, the data could sit in memory and be lost with program crash
@@ -293,7 +293,7 @@ func (s *Storage) buildIndex() error {
 			// page.Data[2:4] contains key length
 			// page.Data[4:6] contains value length
 			keyLen := binary.LittleEndian.Uint16(page.Data[offset : offset+2])
-			valueLen := binary.LittleEndian.Uint16(page.Data[offset : offset+2])
+			valueLen := binary.LittleEndian.Uint16(page.Data[offset+2 : offset+4])
 			// move the position forward by 4 bytes to get to the value indexes
 			offset += 4
 

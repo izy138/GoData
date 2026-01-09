@@ -162,6 +162,7 @@ func Deserialize(data []byte) (*LogEntry, error) {
 	return entry, nil
 }
 
+// checks if the checksum of the entry is valid
 func (e *LogEntry) ValidateChecksum() bool {
 
 	//re-serialize the entry
@@ -175,3 +176,39 @@ func (e *LogEntry) ValidateChecksum() bool {
 	//compare the checksum of the re-serialized data to the checksum in the entry
 	return calculatedChecksum == e.Checksum
 }
+
+func NewWAL(path string) (*WAL, error) {
+	// WAL file path is the database path + ".wal" (ex. "test.db.wal")
+	walPath := dbPath + ".wal"
+
+	//
+	file, err := os.OpenFile(walPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open WAL file: %w", err)
+	}
+
+	wal := &WAL{
+		file: file,
+		path: walPath,
+		lastLSN: 0,
+	}
+
+	stat, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat WAL file: %w", err)
+	}
+
+	if stat.Size() > 0 {
+		if err := wal.scanForLastLSN(); err != nil {
+			return nil, fmt.Errorf("failed to scan WAL file: %w", err)
+		}
+	}
+
+	// start the background goroutine to flush the WAL to disk
+	return wal, nil
+
+}
+
+func (w *WAL) scanForLastLSN() error {}
+
+func (w *WAL) Append(entry *LogEntry) error {}

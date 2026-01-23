@@ -7,6 +7,7 @@ import (
 
 // Example usage of the database
 func main() {
+
 	// Create or open a database
 	db, err := NewStorage("example.db")
 	if err != nil {

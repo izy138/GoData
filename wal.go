@@ -209,6 +209,281 @@ func NewWAL(path string) (*WAL, error) {
 
 }
 
-func (w *WAL) scanForLastLSN() error {}
+func (w *WAL) scanForLastLSN() error {
+	// Get file size
+	stat, err := w.file.Stat()
+	if err != nil {
+		return err
+	}
+	
+	fileSize := stat.Size()
+	offset := int64(0)
+	
+	// Read through all entries
+	for offset < fileSize {
+		// Read entry header to get size
+		headerBuf := make([]byte, 12) // LSN(8) + EntrySize(4)
+		_, err := w.file.ReadAt(headerBuf, offset)
+		if err != nil {
+			// Reached end or corrupted entry
+			break
+		}
+		
+		lsn := binary.LittleEndian.Uint64(headerBuf[0:8])
+		entrySize := binary.LittleEndian.Uint32(headerBuf[8:12])
+		
+		// Update lastLSN if this is higher
+		if lsn > w.lastLSN {
+			w.lastLSN = lsn
+		}
+		
+		// Move to next entry
+		offset += int64(entrySize)
+	}
+	
+	return nil
+	// **What this does:**
+// - Reads through the entire WAL file
+// - Finds the highest LSN number
+// - Sets `lastLSN` so new entries continue from there
 
-func (w *WAL) Append(entry *LogEntry) error {}
+// **Example:**
+// ```
+// WAL file contains:
+// Entry 1: LSN=1
+// Entry 2: LSN=2  
+// Entry 3: LSN=3
+
+// After scan: w.lastLSN = 3
+// Next append will use: LSN=4
+}
+
+
+// Append writes a new log entry to the WAL
+func (w *WAL) Append(typ byte, key, value string) (uint64, error) {
+	// Increment LSN for this new entry
+	w.lastLSN++
+	
+	// Create the log entry
+	entry := &LogEntry{
+		LSN:      w.lastLSN,
+		Type:     typ,
+		Key:      key,
+		Value:    value,
+		KeyLen:   uint16(len(key)),
+		ValueLen: uint16(len(value)),
+	}
+	
+	// Serialize to bytes
+	data := entry.Serialize()
+	
+	// Write to file (goes to end because we opened with O_APPEND)
+	n, err := w.file.Write(data)
+	if err != nil {
+		return 0, fmt.Errorf("failed to write to WAL: %w", err)
+	}
+	
+	if n != len(data) {
+		return 0, fmt.Errorf("incomplete WAL write: wrote %d of %d bytes", n, len(data))
+	}
+	
+	return w.lastLSN, nil
+
+	// wal.Append(LogTypePut, "user:1", "john")
+
+// Step by step:
+// 1. w.lastLSN++ → now lastLSN = 1
+// 2. Create entry with LSN=1
+// 3. Serialize: [31 bytes of data]
+// 4. Write to file at end
+// 5. Return LSN=1
+}
+
+// Sync forces the OS to write buffered data to physical disk
+// This is THE most important method for durability!
+func (w *WAL) Sync() error {
+	return w.file.Sync()
+}
+
+// ReadAll reads all log entries from the WAL file
+func (w *WAL) ReadAll() ([]*LogEntry, error) {
+	// Get file size
+	stat, err := w.file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	
+	fileSize := stat.Size()
+	if fileSize == 0 {
+		return []*LogEntry{}, nil // Empty WAL
+	}
+	
+	// Read entire file into memory
+	data := make([]byte, fileSize)
+	_, err = w.file.ReadAt(data, 0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read WAL: %w", err)
+	}
+	
+	// Parse entries
+	entries := []*LogEntry{}
+	offset := 0
+	
+	for offset < len(data) {
+		// Need at least 12 bytes for header
+		if offset+12 > len(data) {
+			break // Not enough data for another entry
+		}
+		
+		// Read entry size
+		entrySize := binary.LittleEndian.Uint32(data[offset+8 : offset+12])
+		
+		// Check if we have complete entry
+		if offset+int(entrySize) > len(data) {
+			// Incomplete entry - stop here (probably crashed during write)
+			break
+		}
+		
+		// Deserialize entry
+		entry, err := DeserializeLogEntry(data[offset : offset+int(entrySize)])
+		if err != nil {
+			// Corrupted entry - stop here
+			break
+		}
+		
+		// Verify checksum
+		if !entry.VerifyChecksum() {
+			// Checksum mismatch - stop here (corrupted!)
+			break
+		}
+		
+		// Entry is valid, add to list
+		entries = append(entries, entry)
+		
+		// Move to next entry
+		offset += int(entrySize)
+	}
+	
+	return entries, nil
+	// **What this does:**
+// - Reads the entire WAL file into memory
+// - Parses each entry one by one
+// - **Stops at first corrupted entry** (incomplete or bad checksum)
+// - Returns all valid entries
+
+// **Example:**
+// 
+// WAL file (100 bytes):
+// [Entry 1: 31 bytes, checksum ✓]
+// [Entry 2: 35 bytes, checksum ✓]
+// [Entry 3: 20 bytes, checksum ✗] ← Corrupted!
+// [Entry 4: 14 bytes] ← Never checked
+
+// ReadAll() returns: [Entry 1, Entry 2]
+// Stops at corrupted Entry 3
+}
+
+
+
+
+// Close closes the WAL file
+func (w *WAL) Close() error {
+	if w.file != nil {
+		return w.file.Close()
+	}
+	return nil
+}
+
+// Truncate removes all entries from the WAL
+// Used after checkpoint when all operations are safely in pages
+func (w *WAL) Truncate() error {
+	// Close current file
+	if err := w.file.Close(); err != nil {
+		return err
+	}
+	
+	// Delete the file
+	if err := os.Remove(w.path); err != nil {
+		return err
+	}
+	
+	// Create new empty WAL
+	file, err := os.OpenFile(w.path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	
+	w.file = file
+	w.lastLSN = 0
+	
+	return nil
+
+// 	// What this does:
+
+// Deletes the entire WAL file
+// Creates a fresh empty one
+// Used after checkpoint (we'll cover this later)
+}
+// TestWALOperations tests writing and reading WAL entries
+func TestWALOperations() {
+	fmt.Println("\n=== Testing WAL Operations ===")
+	
+	// Clean up any existing test WAL
+	os.Remove("test_wal.db.wal")
+	
+	// 1. Create new WAL
+	wal, err := NewWAL("test_wal.db")
+	if err != nil {
+		fmt.Printf("❌ Failed to create WAL: %v\n", err)
+		return
+	}
+	fmt.Println("✓ Created WAL file")
+	
+	// 2. Write some entries
+	lsn1, _ := wal.Append(LogTypePut, "user:1", "john_doe")
+	fmt.Printf("✓ Appended entry LSN=%d: PUT user:1=john_doe\n", lsn1)
+	
+	lsn2, _ := wal.Append(LogTypePut, "user:2", "jane_smith")
+	fmt.Printf("✓ Appended entry LSN=%d: PUT user:2=jane_smith\n", lsn2)
+	
+	lsn3, _ := wal.Append(LogTypeDelete, "user:1", "")
+	fmt.Printf("✓ Appended entry LSN=%d: DELETE user:1\n", lsn3)
+	
+	// 3. Sync to disk
+	wal.Sync()
+	fmt.Println("✓ Synced to disk")
+	
+	// 4. Read entries back
+	entries, err := wal.ReadAll()
+	if err != nil {
+		fmt.Printf("❌ Failed to read WAL: %v\n", err)
+		return
+	}
+	
+	fmt.Printf("\n✓ Read %d entries from WAL:\n", len(entries))
+	for _, entry := range entries {
+		typeName := "PUT"
+		if entry.Type == LogTypeDelete {
+			typeName = "DELETE"
+		}
+		fmt.Printf("  LSN=%d %s %s=%s (checksum: %08X)\n", 
+			entry.LSN, typeName, entry.Key, entry.Value, entry.Checksum)
+	}
+	
+	// 5. Close
+	wal.Close()
+	fmt.Println("\n✓ Closed WAL")
+	
+	// 6. Reopen and verify persistence
+	fmt.Println("\n--- Testing Persistence ---")
+	wal2, _ := NewWAL("test_wal.db")
+	fmt.Printf("✓ Reopened WAL, lastLSN=%d\n", wal2.lastLSN)
+	
+	entries2, _ := wal2.ReadAll()
+	fmt.Printf("✓ Still has %d entries after reopen\n", len(entries2))
+	
+	wal2.Close()
+	
+	// Cleanup
+	os.Remove("test_wal.db.wal")
+}
